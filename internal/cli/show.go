@@ -16,7 +16,8 @@ var showCmd = &cobra.Command{
 If no password name is provided, list all passwords.
 
 The master password will be cached for 5 minutes (configurable) to avoid repeated prompts.`,
-	Args: cobra.MaximumNArgs(1),
+	Aliases: []string{"view", "get"},
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {

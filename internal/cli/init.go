@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
 	"os"
+	"strings"
 	"syscall"
 
 	"chowkidaar/internal/config"
@@ -37,6 +39,9 @@ If --git-url is provided, the command will:
 - Initialize a new Git repository and link it to the remote if the repository is empty
 - Sync existing passwords from the remote repository
 
+For existing stores (with .enc files), you'll need to enter the 12-word recovery phrase.
+For new stores, a recovery phrase will be generated and displayed.
+
 Examples:
   chowkidaar init                                    # Initialize local store only
   chowkidaar init --git-url https://github.com/user/passwords.git  # Clone or init with Git sync`,
@@ -58,26 +63,6 @@ Examples:
 			if err := gitSync.InitializeWithRemote(); err != nil {
 				return fmt.Errorf("failed to initialize Git repository: %w", err)
 			}
-
-			// If we cloned an existing repository, check if it's already initialized
-			cryptoHandler := crypto.New(storeDir)
-			if cryptoHandler.IsStoreInitialized() {
-				// Save Git configuration for existing store
-				cfg.GitURL = gitURL
-				if err := cfg.SaveGitConfig(); err != nil {
-					fmt.Printf("Warning: failed to save Git configuration: %v\n", err)
-				}
-
-				fmt.Printf("Password store with existing passwords cloned successfully!\n")
-				fmt.Printf("Store location: %s\n", storeDir)
-				fmt.Printf("Git remote: %s\n", gitURL)
-				fmt.Printf("\nThe store is ready to use. You can:\n")
-				fmt.Printf("- View passwords: chowkidaar list\n")
-				fmt.Printf("- Show a password: chowkidaar show <name>\n")
-				fmt.Printf("- Add new passwords: chowkidaar insert <name>\n")
-				fmt.Printf("- Sync changes: chowkidaar git push/pull\n")
-				return nil
-			}
 		} else {
 			// Create password store directory for local-only initialization
 			if err := os.MkdirAll(storeDir, 0700); err != nil {
@@ -88,14 +73,78 @@ Examples:
 		// Initialize crypto handler
 		cryptoHandler := crypto.New(storeDir)
 
-		// Check if already initialized (for local repositories)
-		if cryptoHandler.IsStoreInitialized() {
+		// Check if this is an existing store (has encrypted passwords)
+		hasEncryptedPasswords, err := cryptoHandler.HasEncryptedPasswords()
+		if err != nil {
+			return fmt.Errorf("failed to check for encrypted passwords: %w", err)
+		}
+
+		if hasEncryptedPasswords {
+			// SCENARIO: Cloning existing password store
+			fmt.Println("\n🔐 Existing password store detected!")
+			fmt.Println("To access these passwords, you need the 12-word recovery phrase.")
+			fmt.Println()
+
+			// Prompt for mnemonic
+			reader := bufio.NewReader(os.Stdin)
+			fmt.Print("Enter your 12-word recovery phrase: ")
+			mnemonicInput, err := reader.ReadString('\n')
+			if err != nil {
+				return fmt.Errorf("failed to read recovery phrase: %w", err)
+			}
+			mnemonic := strings.TrimSpace(mnemonicInput)
+
+			// Create keyfile from mnemonic
+			if err := cryptoHandler.CreateKeyFileFromMnemonic(mnemonic); err != nil {
+				return fmt.Errorf("failed to create keyfile from recovery phrase: %w", err)
+			}
+
+			// Save Git configuration
+			if gitURL != "" {
+				cfg.GitURL = gitURL
+				if err := cfg.SaveGitConfig(); err != nil {
+					fmt.Printf("Warning: failed to save Git configuration: %v\n", err)
+				}
+			}
+
+			fmt.Printf("\n✅ Password store initialized successfully!\n")
+			fmt.Printf("Store location: %s\n", storeDir)
+			if gitURL != "" {
+				fmt.Printf("Git remote: %s\n", gitURL)
+			}
+			fmt.Printf("\nThe store is ready to use. You can:\n")
+			fmt.Printf("- View passwords: chowkidaar list\n")
+			fmt.Printf("- Show a password: chowkidaar show <name>\n")
+			fmt.Printf("- Add new passwords: chowkidaar insert <name>\n")
+			if gitURL != "" {
+				fmt.Printf("- Sync changes: chowkidaar git push/pull\n")
+			}
+			return nil
+		}
+
+		// SCENARIO: Creating new password store
+		
+		// Check if keyfile already exists (store was previously initialized)
+		if cryptoHandler.HasKeyFile() {
 			return fmt.Errorf("password store already initialized at %s", storeDir)
 		}
 
-		// Prompt for master password (without validation since we're initializing)
+		fmt.Println("\n🆕 Creating new password store...")
+		
+		// Generate BIP-39 mnemonic
+		mnemonic, err := cryptoHandler.GenerateMnemonic()
+		if err != nil {
+			return fmt.Errorf("failed to generate recovery phrase: %w", err)
+		}
+
+		// Create keyfile from mnemonic
+		if err := cryptoHandler.CreateKeyFileFromMnemonic(mnemonic); err != nil {
+			return fmt.Errorf("failed to create keyfile: %w", err)
+		}
+
+		// Prompt for master password
 		fmt.Println("\nSetting up master password for the password store...")
-		masterPassword, err := promptPasswordInput("Enter master password for this store: ")
+		masterPassword, err := promptPasswordInput("Enter master password: ")
 		if err != nil {
 			return fmt.Errorf("failed to read master password: %w", err)
 		}
@@ -114,11 +163,6 @@ Examples:
 			return fmt.Errorf("passwords do not match")
 		}
 
-		// Initialize master password
-		if err := cryptoHandler.InitializeMasterPassword(masterPassword); err != nil {
-			return fmt.Errorf("failed to initialize master password: %w", err)
-		}
-
 		// Save Git configuration if Git URL was provided
 		if gitURL != "" {
 			cfg.GitURL = gitURL
@@ -127,26 +171,29 @@ Examples:
 			}
 		}
 
-		// If Git sync is enabled, commit the master password file
-		if gitSync != nil && gitSync.IsGitEnabled() {
-			if err := gitSync.CommitAndPushChanges("Add master password configuration"); err != nil {
-				fmt.Printf("Warning: failed to commit master password to Git: %v\n", err)
-			}
-		}
-
-		fmt.Printf("\nPassword store initialized successfully!\n")
+		// Display success message with recovery phrase
+		fmt.Printf("\n✅ Password store initialized successfully!\n")
 		fmt.Printf("Store location: %s\n", storeDir)
 		if gitURL != "" {
 			fmt.Printf("Git remote: %s\n", gitURL)
-			fmt.Printf("\nGit synchronization is enabled. Changes will be automatically committed and pushed.\n")
 		}
+		
+		fmt.Println("\n" + strings.Repeat("=", 70))
+		fmt.Println("⚠️  IMPORTANT: Write down your 12-word recovery phrase!")
+		fmt.Println(strings.Repeat("=", 70))
+		fmt.Printf("\n%s\n\n", mnemonic)
+		fmt.Println("This phrase is required to:")
+		fmt.Println("  • Set up this password store on another device")
+		fmt.Println("  • Recover access if you lose your keyfile")
+		fmt.Println("\n⚠️  Store this phrase safely - it CANNOT be recovered if lost!")
+		fmt.Println(strings.Repeat("=", 70))
+
 		fmt.Printf("\nYou can now:\n")
 		fmt.Printf("- Add passwords: chowkidaar insert <name>\n")
 		fmt.Printf("- View passwords: chowkidaar list\n")
 		if gitURL != "" {
 			fmt.Printf("- Sync changes: chowkidaar git push/pull\n")
 		}
-		fmt.Printf("\nRemember your master password - it cannot be recovered if lost!\n")
 
 		return nil
 	},

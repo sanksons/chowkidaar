@@ -190,15 +190,17 @@ chmod 600 ~/.netrc
 ### Encryption Stack
 
 ```
-┌─────────────────────────┐
-│     Your Password       │
-├─────────────────────────┤
-│   AES-256-GCM Cipher    │  ← Authenticated Encryption
-├─────────────────────────┤
-│   Argon2id Key Derive   │  ← OWASP Recommended
-├─────────────────────────┤
-│   Master Password       │  ← You remember this
-└─────────────────────────┘
+┌─────────────────────────────┐
+│     Your Password          │
+├─────────────────────────────┤
+│   AES-256-GCM Cipher       │  ← Authenticated Encryption
+├─────────────────────────────┤
+│   Argon2id Key Derivation  │  ← OWASP Recommended
+├─────────────────────────────┤
+│ Master Password + KeyFile  │  ← Two-Factor Protection
+├─────────────────────────────┤
+│   BIP-39 Recovery Phrase   │  ← 12-word backup
+└─────────────────────────────┘
 ```
 
 ### File Structure
@@ -207,7 +209,7 @@ chmod 600 ~/.netrc
 ~/.password-store/
 ├── .git/                   # Git repository
 ├── .cache/                 # Encrypted cache (auto-created)
-├── .master                 # Master password hash
+├── .keyfile                # Encryption keyfile (generated from recovery phrase, NOT synced)
 ├── .git-config            # Git sync configuration
 ├── Work/
 │   ├── email.enc          # Encrypted password files

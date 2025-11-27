@@ -26,7 +26,7 @@ func Load() (*Config, error) {
 
 	// Default configuration
 	cfg := &Config{
-		StoreDir:     filepath.Join(homeDir, ".password-store"),
+		StoreDir:     filepath.Join(homeDir, ".chowkidaar"),
 		Editor:       getEnvDefault("EDITOR", "vim"),
 		CacheTimeout: 5,    // Default 5 minutes
 		GitAutoSync:  true, // Auto-sync enabled by default
