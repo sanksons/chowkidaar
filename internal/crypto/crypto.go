@@ -168,23 +168,165 @@ func (c *Crypto) PromptMasterPassword(prompt string) (string, error) {
 		return cachedPassword, nil
 	}
 
-	fmt.Print(prompt)
+	// Display full-screen banner
+	leftPad, inputRow, boxWidth := c.displayPasswordBanner(prompt)
 
-	// Read password without echoing to terminal
-	passwordBytes, err := term.ReadPassword(int(syscall.Stdin))
-	fmt.Println() // Add newline after password input
-
+	// Read password with asterisk feedback
+	password, err := c.readPasswordWithFeedback(leftPad, inputRow, boxWidth)
 	if err != nil {
 		return "", fmt.Errorf("failed to read password: %w", err)
 	}
 
-	password := string(passwordBytes)
+	// Clear the banner
+	c.clearPasswordBanner()
 
 	// Note: We don't cache the password here.
 	// It will be cached only after successful decryption/encryption.
 	// The caller should call CachePassword() after successful operation.
 
 	return password, nil
+}
+
+// readPasswordWithFeedback reads password from stdin with asterisk visual feedback
+// Asterisks are center-aligned within the box
+func (c *Crypto) readPasswordWithFeedback(leftPad, row, boxWidth int) (string, error) {
+	// Set terminal to raw mode to read individual characters
+	oldState, err := term.MakeRaw(int(syscall.Stdin))
+	if err != nil {
+		return "", err
+	}
+	defer term.Restore(int(syscall.Stdin), oldState)
+
+	var password []byte
+	var buf [1]byte
+
+	// Helper function to redraw centered asterisks
+	redrawPassword := func() {
+		// Clear the input line
+		fmt.Printf("\033[%d;%dH", row, leftPad+2)
+		fmt.Print(strings.Repeat(" ", boxWidth-2))
+
+		// Calculate centered position for asterisks
+		asterisks := strings.Repeat("*", len(password))
+		padding := (boxWidth - 2 - len(asterisks)) / 2
+		if padding < 0 {
+			padding = 0
+		}
+
+		// Position cursor and print centered asterisks
+		fmt.Printf("\033[%d;%dH", row, leftPad+2+padding)
+		fmt.Print(asterisks)
+	}
+
+	for {
+		n, err := os.Stdin.Read(buf[:])
+		if err != nil {
+			return "", err
+		}
+		if n == 0 {
+			continue
+		}
+
+		char := buf[0]
+
+		// Handle special keys
+		switch char {
+		case 3: // Ctrl+C
+			fmt.Println()
+			return "", fmt.Errorf("interrupted")
+		case 13, 10: // Enter (CR or LF)
+			return string(password), nil
+		case 127, 8: // Backspace or Delete
+			if len(password) > 0 {
+				password = password[:len(password)-1]
+				redrawPassword()
+			}
+		default:
+			// Add character to password
+			if char >= 32 && char <= 126 { // Printable ASCII
+				password = append(password, char)
+				redrawPassword()
+			}
+		}
+	}
+}
+
+// displayPasswordBanner shows a full-screen banner for password entry
+// Returns (leftPadding, inputRow, boxWidth) for cursor positioning
+func (c *Crypto) displayPasswordBanner(prompt string) (int, int, int) {
+	// Clear screen
+	fmt.Print("\033[2J\033[H")
+
+	// Get terminal size
+	width := 80  // default width
+	height := 24 // default height
+	if w, h, err := term.GetSize(int(syscall.Stdin)); err == nil && w > 0 {
+		width = w
+		height = h
+	}
+
+	// Calculate vertical centering
+	topPadding := (height - 13) / 2
+	if topPadding < 0 {
+		topPadding = 0
+	}
+
+	// Add top padding
+	for i := 0; i < topPadding; i++ {
+		fmt.Println()
+	}
+
+	// Calculate box width (max 60 chars or terminal width - 20)
+	boxWidth := 60
+	if width-20 < boxWidth {
+		boxWidth = width - 20
+	}
+	if boxWidth < 40 {
+		boxWidth = 40
+	}
+
+	// Calculate left padding for horizontal centering
+	leftPadding := (width - boxWidth) / 2
+	if leftPadding < 0 {
+		leftPadding = 0
+	}
+	indent := strings.Repeat(" ", leftPadding)
+
+	// Clean, professional banner with input line inside
+	fmt.Println(indent + "┌" + strings.Repeat("─", boxWidth-2) + "┐")
+	fmt.Println(indent + "│" + strings.Repeat(" ", boxWidth-2) + "│")
+	fmt.Println(indent + "│" + centerText("CHOWKIDAAR", boxWidth-2) + "│")
+	fmt.Println(indent + "│" + centerText("Password Manager", boxWidth-2) + "│")
+	fmt.Println(indent + "│" + strings.Repeat(" ", boxWidth-2) + "│")
+	fmt.Println(indent + "├" + strings.Repeat("─", boxWidth-2) + "┤")
+	fmt.Println(indent + "│" + strings.Repeat(" ", boxWidth-2) + "│")
+	fmt.Println(indent + "│" + centerText(prompt, boxWidth-2) + "│")
+	fmt.Println(indent + "│" + strings.Repeat(" ", boxWidth-2) + "│")
+
+	// Input line inside the box
+	inputRow := topPadding + 10 // Row where input will appear
+	fmt.Println(indent + "│" + strings.Repeat(" ", boxWidth-2) + "│")
+	fmt.Println(indent + "│" + strings.Repeat(" ", boxWidth-2) + "│")
+	fmt.Println(indent + "└" + strings.Repeat("─", boxWidth-2) + "┘")
+
+	return leftPadding, inputRow, boxWidth
+}
+
+// clearPasswordBanner clears the password banner from screen
+func (c *Crypto) clearPasswordBanner() {
+	// Clear screen and return to normal
+	fmt.Print("\033[2J\033[H")
+}
+
+// centerText centers text within a given width
+func centerText(text string, width int) string {
+	// Count actual character width (accounting for emojis and Unicode)
+	textLen := len([]rune(text))
+	if textLen >= width {
+		return text[:width]
+	}
+	padding := (width - textLen) / 2
+	return strings.Repeat(" ", padding) + text + strings.Repeat(" ", width-textLen-padding)
 }
 
 // CachePassword caches a validated master password
