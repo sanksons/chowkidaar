@@ -52,11 +52,6 @@ func NewWithGitConfig(baseDir string, cacheTimeoutMinutes int, gitURL string, au
 	// Set the cache timeout
 	cryptoHandler.SetCacheTimeout(time.Duration(cacheTimeoutMinutes) * time.Minute)
 
-	// Check if store is properly initialized with master password
-	if !cryptoHandler.IsStoreInitialized() {
-		return nil, fmt.Errorf("password store not properly initialized. Run 'chowkidaar init' first")
-	}
-
 	// Initialize Git sync if URL is provided
 	var gitSync *gitsync.GitSync
 	if gitURL != "" {
@@ -78,9 +73,9 @@ func (s *Store) PromptMasterPassword(prompt string) (string, error) {
 
 // Insert stores a new password
 func (s *Store) Insert(name, password, masterPassword string) error {
-	// Validate master password first
-	if err := s.crypto.ValidateMasterPassword(masterPassword); err != nil {
-		return fmt.Errorf("master password validation failed: %w", err)
+	// Validate password against existing encrypted files (if any)
+	if err := s.validatePasswordIfNeeded(masterPassword); err != nil {
+		return fmt.Errorf("password validation failed: %w", err)
 	}
 
 	// Check if password already exists
@@ -106,6 +101,9 @@ func (s *Store) Insert(name, password, masterPassword string) error {
 		return fmt.Errorf("failed to write password file: %w", err)
 	}
 
+	// Cache the validated master password (encryption succeeded)
+	s.crypto.CachePassword(masterPassword)
+
 	// Auto-commit to Git if enabled
 	if err := s.autoCommit(fmt.Sprintf("Add password for %s", name)); err != nil {
 		fmt.Printf("Warning: failed to commit changes to Git: %v\n", err)
@@ -116,9 +114,9 @@ func (s *Store) Insert(name, password, masterPassword string) error {
 
 // Update updates an existing password or creates a new one if it doesn't exist
 func (s *Store) Update(name, password, masterPassword string) error {
-	// Validate master password first
-	if err := s.crypto.ValidateMasterPassword(masterPassword); err != nil {
-		return fmt.Errorf("master password validation failed: %w", err)
+	// Validate password against existing encrypted files (if any)
+	if err := s.validatePasswordIfNeeded(masterPassword); err != nil {
+		return fmt.Errorf("password validation failed: %w", err)
 	}
 
 	filePath := s.getPasswordFilePath(name)
@@ -139,6 +137,9 @@ func (s *Store) Update(name, password, masterPassword string) error {
 		return fmt.Errorf("failed to write password file: %w", err)
 	}
 
+	// Cache the validated master password (encryption succeeded)
+	s.crypto.CachePassword(masterPassword)
+
 	// Auto-commit to Git if enabled
 	if err := s.autoCommit(fmt.Sprintf("Update password for %s", name)); err != nil {
 		fmt.Printf("Warning: failed to commit changes to Git: %v\n", err)
@@ -149,11 +150,6 @@ func (s *Store) Update(name, password, masterPassword string) error {
 
 // Show retrieves and decrypts a password
 func (s *Store) Show(name, masterPassword string) (string, error) {
-	// Validate master password first
-	if err := s.crypto.ValidateMasterPassword(masterPassword); err != nil {
-		return "", fmt.Errorf("master password validation failed: %w", err)
-	}
-
 	filePath := s.getPasswordFilePath(name)
 
 	// Read encrypted password
@@ -171,16 +167,14 @@ func (s *Store) Show(name, masterPassword string) (string, error) {
 		return "", fmt.Errorf("failed to decrypt password: %w", err)
 	}
 
+	// Cache the validated master password (decryption succeeded)
+	s.crypto.CachePassword(masterPassword)
+
 	return string(decrypted), nil
 }
 
 // Generate creates and stores a new random password
 func (s *Store) Generate(name string, length int, noSymbols bool, inPlace bool, masterPassword string) (string, error) {
-	// Validate master password first
-	if err := s.crypto.ValidateMasterPassword(masterPassword); err != nil {
-		return "", fmt.Errorf("master password validation failed: %w", err)
-	}
-
 	charset := defaultCharset
 	if !noSymbols {
 		charset += symbolCharset
@@ -194,6 +188,8 @@ func (s *Store) Generate(name string, length int, noSymbols bool, inPlace bool, 
 	if err := s.Insert(name, password, masterPassword); err != nil {
 		return "", fmt.Errorf("failed to insert generated password: %w", err)
 	}
+
+	// Note: Password is already cached in Insert() method
 
 	if inPlace {
 		return "", nil
@@ -271,11 +267,6 @@ func (s *Store) GetCacheStatus() (bool, time.Duration) {
 
 // Edit opens a password for editing using the specified editor
 func (s *Store) Edit(name, masterPassword, editor string) error {
-	// Validate master password first
-	if err := s.crypto.ValidateMasterPassword(masterPassword); err != nil {
-		return fmt.Errorf("master password validation failed: %w", err)
-	}
-
 	filePath := s.getPasswordFilePath(name)
 
 	// Check if password exists, if not create a new one
@@ -345,6 +336,48 @@ func (s *Store) Edit(name, masterPassword, editor string) error {
 }
 
 // Helper methods
+
+// validatePasswordIfNeeded validates the master password against an existing encrypted file
+// This ensures password consistency across all operations
+func (s *Store) validatePasswordIfNeeded(masterPassword string) error {
+	// Find any .enc file to validate against
+	var testFile string
+	err := filepath.Walk(s.baseDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasSuffix(info.Name(), ".enc") {
+			testFile = path
+			return filepath.SkipAll // Stop after finding first .enc file
+		}
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to search for encrypted files: %w", err)
+	}
+
+	// If no encrypted files exist yet, password is valid (first time use)
+	if testFile == "" {
+		return nil
+	}
+
+	// Try to decrypt the test file to validate the password
+	encrypted, err := os.ReadFile(testFile)
+	if err != nil {
+		return fmt.Errorf("failed to read test file: %w", err)
+	}
+
+	_, err = s.crypto.Decrypt(encrypted, masterPassword)
+	if err != nil {
+		return fmt.Errorf("incorrect master password")
+	}
+
+	// Password is valid, cache it
+	s.crypto.CachePassword(masterPassword)
+
+	return nil
+}
 
 func (s *Store) getPasswordFilePath(name string) string {
 	// Ensure the name ends with .enc extension

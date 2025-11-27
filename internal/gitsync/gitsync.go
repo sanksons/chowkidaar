@@ -158,7 +158,7 @@ func (gs *GitSync) initLocalRepository() error {
 	gitignorePath := filepath.Join(gs.storeDir, ".gitignore")
 	gitignoreContent := `# Chowkidaar configuration and cache files
 .cache/
-.master
+.keyfile
 .git-config
 
 # System files
@@ -656,7 +656,7 @@ func (gs *GitSync) ensureGitignore() error {
 	gitignorePath := filepath.Join(gs.storeDir, ".gitignore")
 	gitignoreContent := `# Chowkidaar configuration and cache files
 .cache/
-.master
+.keyfile
 .git-config
 
 # System files
@@ -689,7 +689,7 @@ func (gs *GitSync) removeTrackedConfigFiles() error {
 		return err
 	}
 
-	configFiles := []string{".cache", ".master", ".git-config"}
+	configFiles := []string{".cache", ".keyfile", ".git-config"}
 
 	for _, configFile := range configFiles {
 		configPath := filepath.Join(gs.storeDir, configFile)
